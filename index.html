@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Doom Web - Simple Version</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background-color: #000; overflow: hidden; font-family: sans-serif; }
+        #game-container { position: relative; width: 100vw; height: 100vh; }
+        #gameCanvas { width: 100%; height: 100%; cursor: crosshair; }
+        #hud { position: fixed; bottom: 20px; left: 20px; color: #f00; font-size: 24px; font-family: monospace; text-shadow: 2px 2px 2px #000; }
+        #hud div { margin: 10px 0; }
+        #menu { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); padding: 40px; border: 2px solid #f00; text-align: center; }
+        #menu h1 { color: #f00; font-size: 48px; margin-bottom: 30px; }
+        #menu button { display: block; width: 200px; margin: 10px auto; padding: 15px; background: #f00; border: none; color: white; font-size: 20px; cursor: pointer; }
+        #menu button:hover { background: #c00; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="hud">
+            <div id="health">Health: <span>100</span></div>
+            <div id="ammo">Ammo: <span>50</span></div>
+            <div id="score">Score: <span>0</span></div>
+        </div>
+        <div id="menu">
+            <h1>DOOM WEB</h1>
+            <button id="startGame">Start Game</button>
+            <button id="settings">Settings</button>
+        </div>
+    </div>
+    
+    <script>
+        // Game engine with raycasting
+        class Engine {
+            constructor() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.setCanvasSize();
+                
+                this.map = [
+                    [1,1,1,1,1,1,1,1],
+                    [1,0,0,0,0,0,0,1],
+                    [1,0,1,0,0,1,0,1],
+                    [1,0,0,0,0,0,0,1],
+                    [1,0,1,0,0,1,0,1],
+                    [1,0,0,0,0,0,0,1],
+                    [1,0,1,0,0,1,0,1],
+                    [1,1,1,1,1,1,1,1]
+                ];
+                
+                this.CELL_SIZE = 64;
+                this.FOV = Math.PI / 3;
+                this.HALF_FOV = this.FOV / 2;
+                this.RAYS = 300;
+                this.STEP_ANGLE = this.FOV / this.RAYS;
+                this.MAX_DEPTH = this.CELL_SIZE * 8;
+                
+                window.addEventListener('resize', () => this.setCanvasSize());
+            }
+
+            setCanvasSize() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                this.RAYS = Math.min(300, this.canvas.width);
+                this.STEP_ANGLE = this.FOV / this.RAYS;
+            }
+
+            castRay(angle, playerX, playerY) {
+                let rayX = playerX;
+                let rayY = playerY;
+                let rayAngle = angle;
+                rayAngle = rayAngle % (2 * Math.PI);
+                if (rayAngle < 0) rayAngle += 2 * Math.PI;
+
+                const tanAngle = Math.tan(rayAngle);
+                let distance = 0;
+                
+                let dX = this.CELL_SIZE / 4;
+                let dY = this.CELL_SIZE / 4 * tanAngle;
+                if (rayAngle > Math.PI) {
+                    dY = -dY;
+                }
+                
+                while (distance < this.MAX_DEPTH) {
+                    const mapX = Math.floor(rayX / this.CELL_SIZE);
+                    const mapY = Math.floor(rayY / this.CELL_SIZE);
+                    
+                    if (mapX >= 0 && mapX < this.map[0].length && 
+                        mapY >= 0 && mapY < this.map.length) {
+                        if (this.map[mapY][mapX] === 1) {
+                            const dist = Math.sqrt(
+                                (rayX - playerX) * (rayX - playerX) + 
+                                (rayY - playerY) * (rayY - playerY)
+                            );
+                            return { distance: dist, wallType: 1 };
+                        }
+                    }
+                    
+                    rayX += dX;
+                    rayY += dY;
+                    distance += Math.sqrt(dX * dX + dY * dY);
+                }
+                
+                return { distance: this.MAX_DEPTH, wallType: 0 };
+            }
+
+            render(player) {
+                // Clear screen
+                this.ctx.fillStyle = '#000';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // Draw floor
+                this.ctx.fillStyle = '#333';
+                this.ctx.fillRect(0, this.canvas.height / 2, this.canvas.width, this.canvas.height / 2);
+                
+                // Cast rays and draw walls
+                for (let i = 0; i < this.RAYS; i++) {
+                    const rayAngle = player.angle - this.HALF_FOV + (i * this.STEP_ANGLE);
+                    const ray = this.castRay(rayAngle, player.x, player.y);
+                    
+                    // Fix fisheye effect
+                    const correctDistance = ray.distance * Math.cos(rayAngle - player.angle);
+                    
+                    // Calculate wall height
+                    const wallHeight = (this.CELL_SIZE * this.canvas.height) / correctDistance;
+                    
+                    // Draw wall strip
+                    const brightness = Math.max(0, 255 - correctDistance * 1.5);
+                    this.ctx.fillStyle = `rgb(${brightness}, 0, 0)`;
+                    
+                    const columnWidth = this.canvas.width / this.RAYS;
+                    this.ctx.fillRect(
+                        i * columnWidth,
+                        (this.canvas.height - wallHeight) / 2,
+                        columnWidth + 1,
+                        wallHeight
+                    );
+                }
+            }
+        }
+
+        // Player class
+        class Player {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.angle = 0;
+                this.speed = 3;
+                this.turnSpeed = 0.05;
+                this.health = 100;
+                this.ammo = 50;
+                this.score = 0;
+                
+                this.keys = {
+                    forward: false,
+                    backward: false,
+                    left: false,
+                    right: false
+                };
+                
+                this.setupControls();
+            }
+            
+            setupControls() {
+                document.addEventListener('keydown', (e) => {
+                    switch(e.key.toLowerCase()) {
+                        case 'w': this.keys.forward = true; break;
+                        case 's': this.keys.backward = true; break;
+                        case 'a': this.keys.left = true; break;
+                        case 'd': this.keys.right = true; break;
+                    }
+                });
+                
+                document.addEventListener('keyup', (e) => {
+                    switch(e.key.toLowerCase()) {
+                        case 'w': this.keys.forward = false; break;
+                        case 's': this.keys.backward = false; break;
+                        case 'a': this.keys.left = false; break;
+                        case 'd': this.keys.right = false; break;
+                    }
+                });
+                
+                document.addEventListener('mousemove', (e) => {
+                    if (document.pointerLockElement === this.canvas) {
+                        this.angle += e.movementX * 0.002;
+                    }
+                });
+                
+                this.canvas = document.getElementById('gameCanvas');
+                this.canvas.addEventListener('click', () => {
+                    this.canvas.requestPointerLock();
+                });
+            }
+            
+            update() {
+                // Movement
+                if (this.keys.forward) {
+                    this.x += Math.cos(this.angle) * this.speed;
+                    this.y += Math.sin(this.angle) * this.speed;
+                }
+                if (this.keys.backward) {
+                    this.x -= Math.cos(this.angle) * this.speed;
+                    this.y -= Math.sin(this.angle) * this.speed;
+                }
+                if (this.keys.left) {
+                    this.angle -= this.turnSpeed;
+                }
+                if (this.keys.right) {
+                    this.angle += this.turnSpeed;
+                }
+                
+                // Simple collision detection
+                const mapX = Math.floor(this.x / engine.CELL_SIZE);
+                const mapY = Math.floor(this.y / engine.CELL_SIZE);
+                
+                if (engine.map[mapY] && engine.map[mapY][mapX] === 1) {
+                    // Move back if colliding
+                    if (this.keys.forward) {
+                        this.x -= Math.cos(this.angle) * this.speed;
+                        this.y -= Math.sin(this.angle) * this.speed;
+                    }
+                    if (this.keys.backward) {
+                        this.x += Math.cos(this.angle) * this.speed;
+                        this.y += Math.sin(this.angle) * this.speed;
+                    }
+                }
+                
+                // Update HUD
+                document.querySelector('#health span').textContent = this.health;
+                document.querySelector('#ammo span').textContent = this.ammo;
+                document.querySelector('#score span').textContent = this.score;
+            }
+        }
+
+        // Game manager
+        class Game {
+            constructor() {
+                this.isRunning = false;
+                this.lastTime = 0;
+                
+                // Setup menu controls
+                document.getElementById('startGame').addEventListener('click', () => {
+                    this.startGame();
+                });
+                
+                document.getElementById('settings').addEventListener('click', () => {
+                    console.log('Settings clicked');
+                });
+                
+                // Handle escape key for pause
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') {
+                        if (this.isRunning) {
+                            this.pause();
+                        } else {
+                            this.resume();
+                        }
+                    }
+                });
+            }
+            
+            startGame() {
+                document.getElementById('menu').classList.add('hidden');
+                this.isRunning = true;
+                this.gameLoop(0);
+            }
+            
+            gameLoop(timestamp) {
+                if (!this.isRunning) return;
+                
+                // Update game state
+                player.update();
+                
+                // Render frame
+                engine.render(player);
+                
+                // Request next frame
+                requestAnimationFrame((t) => this.gameLoop(t));
+            }
+            
+            pause() {
+                this.isRunning = false;
+                document.getElementById('menu').classList.remove('hidden');
+            }
+            
+            resume() {
+                document.getElementById('menu').classList.add('hidden');
+                this.isRunning = true;
+                this.gameLoop(0);
+            }
+        }
+
+        // Initialize the game
+        const engine = new Engine();
+        const player = new Player(engine.CELL_SIZE * 1.5, engine.CELL_SIZE * 1.5);
+        const game = new Game();
+    </script>
+</body>
+</html> 
